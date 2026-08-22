@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
+from concurrent.futures import Future, ProcessPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -114,8 +116,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # evaluation / reporting
     "eval_max_images": None,
     "eval_num_workers": 2,
+    "eval_batch_size": 8,
+    "crf_workers": 4,                # CPU processes refining CRF while the GPU proceeds
     "viz_n_examples": 10,
 }
+
+
+def _crf_worker(payload: tuple[str, dict[int, np.ndarray], float, str]) -> str:
+    """Refine one image's CAM scores with DenseCRF and save the mask (runs in a CPU process)."""
+    image_path, cam_dict, alpha, out_path = payload
+    rgb = np.asarray(Image.open(image_path).convert("RGB"))
+    mask = crf_argmax_mask(rgb, cam_dict, alpha=alpha)
+    save_pseudo_mask(mask, Path(out_path).parent, Path(out_path).stem)
+    return out_path
 
 
 class FullPipeline:
@@ -208,6 +221,16 @@ class FullPipeline:
                 "The 'train_aug' list requires SegmentationClassAug masks."
             )
         return ids
+
+    def _viz_val_ids(self) -> list[str]:
+        """Evenly spaced val ids used for qualitative grids (kept small on purpose)."""
+        val_ids = read_split_list(self.voc_root / "ImageSets/Segmentation/val.txt")
+        n = max(1, int(self.config["viz_n_examples"]))
+        stride = max(1, len(val_ids) // n)
+        return val_ids[::stride][:n]
+
+    def _labels_for(self, image_ids: list[str], lookup: dict[str, np.ndarray]) -> np.ndarray:
+        return np.stack([lookup[image_id] for image_id in image_ids])
 
     def gt_mask_dir(self) -> Path:
         if self.class_names_fg is not None:  # synthetic dataset
@@ -385,7 +408,28 @@ class FullPipeline:
     # -- pseudo masks ---------------------------------------------------------
 
     def _stage_generate_pseudo_masks(self):
-        train_ids, train_labels, val_ids, val_labels = self._resolve_splits()
+        # Classifiers may train on all Main-labelled images (5,717 for VOC train),
+        # but pseudo masks are only needed where they are consumed: the segmentation
+        # training ids plus the handful of val ids used in qualitative grids.
+        seg_train_ids = self._seg_train_ids()
+        viz_ids = self._viz_val_ids() if self.config["cam_include_val_for_viz"] else []
+
+        train_split = str(self.config["label_source_split"])
+        if train_split == "auto":
+            train_split = {"train": "train", "val": "val", "train_aug": "train"}.get(
+                str(self.config["train_list"]), "train")
+        label_lookup = dict(zip(*load_cls_labels(
+            self.voc_root, train_split, self.num_fg_classes, self.class_names_fg)))
+        if viz_ids:
+            val_lookup = dict(zip(*load_cls_labels(
+                self.voc_root, "val", self.num_fg_classes, self.class_names_fg)))
+            label_lookup.update(val_lookup)
+
+        target_ids = list(dict.fromkeys(seg_train_ids + viz_ids))
+        target_labels = self._labels_for(target_ids, label_lookup)
+        self.logger.info("pseudo masks: %d segmentation-train ids + %d viz ids",
+                         len(seg_train_ids), len(viz_ids))
+
         use_crf = bool(self.config["cam_use_crf"]) and CRF_AVAILABLE
         if bool(self.config["cam_use_crf"]) and not CRF_AVAILABLE:
             self.logger.warning("pydensecrf unavailable -> skipping CAM+CRF variant "
@@ -398,41 +442,77 @@ class FullPipeline:
              bool(self.config["cam_seam_flips"])),
         ]
         artifacts: list[str] = []
-        for out_name, arch, scales, flips in jobs:
-            # The ownership experiment refines the NAIVE CAMs only: Raw CAM vs
-            # CAM+DenseCRF vs SEAM keeps one refinement variable per row.
-            use_crf_here = use_crf and out_name == "cam_naive"
-            model = self._load_classifier_checkpoint(arch)
-            all_ids = train_ids + val_ids
-            all_labels = np.concatenate([train_labels, val_labels], axis=0) \
-                if val_ids else train_labels
-            out_dir = self.masks_dir / out_name
-            count = 0
-            for image_id, cam_dict in generate_cam_scores(
-                    model, self.voc_root, all_ids, all_labels, self.device,
-                    scales=scales, flips=flips,
-                    max_long_side=int(self.config["cam_max_long_side"])):
-                mask = cams_to_argmax_mask(cam_dict, bg_alpha=float(self.config["cam_bg_alpha"]))
-                save_pseudo_mask(mask, out_dir, image_id)
-                if use_crf_here:
-                    rgb = np.asarray(load_image(self.voc_root, image_id))
-                    crf_mask = crf_argmax_mask(rgb, cam_dict,
-                                               alpha=float(self.config["cam_crf_alpha"]))
-                    save_pseudo_mask(crf_mask, self.masks_dir / f"{out_name}_crf", image_id)
-                count += 1
-            self.logger.info("generated %d %s pseudo-masks%s", count, out_name,
-                             " (+CRF)" if use_crf_here else "")
-            del model
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
+        crf_futures: deque[Future] = deque()
+        crf_workers = max(0, int(self.config["crf_workers"]))
+        executor = ProcessPoolExecutor(max_workers=crf_workers) if (use_crf and crf_workers) else None
+
+        def _drain_crf(limit: int) -> None:
+            while len(crf_futures) > limit:
+                done = [f for f in crf_futures if f.done()]
+                if not done:
+                    time.sleep(0.2)
+                    continue
+                for future in done:
+                    future.result()
+                    crf_futures.remove(future)
+
+        try:
+            for out_name, arch, scales, flips in jobs:
+                # The ownership experiment refines the NAIVE CAMs only: Raw CAM vs
+                # CAM+DenseCRF vs SEAM keeps one refinement variable per row.
+                use_crf_here = use_crf and out_name == "cam_naive"
+                model = self._load_classifier_checkpoint(arch)
+                out_dir = self.masks_dir / out_name
+                count = 0
+                for image_id, cam_dict in generate_cam_scores(
+                        model, self.voc_root, target_ids, target_labels, self.device,
+                        scales=scales, flips=flips,
+                        max_long_side=int(self.config["cam_max_long_side"])):
+                    mask = cams_to_argmax_mask(cam_dict, bg_alpha=float(self.config["cam_bg_alpha"]))
+                    save_pseudo_mask(mask, out_dir, image_id)
+                    if use_crf_here:
+                        cam_payload = {
+                            c: np.asarray(scores, dtype=np.float32) for c, scores in cam_dict.items()
+                        }
+                        out_path = self.masks_dir / f"{out_name}_crf" / f"{image_id}.png"
+                        if executor is not None:
+                            payload = (
+                                str(self.voc_root / "JPEGImages" / f"{image_id}.jpg"),
+                                cam_payload,
+                                float(self.config["cam_crf_alpha"]),
+                                str(out_path),
+                            )
+                            crf_futures.append(executor.submit(_crf_worker, payload))
+                            _drain_crf(32)  # bound in-flight RAM; GPU keeps streaming
+                        else:
+                            rgb = np.asarray(load_image(self.voc_root, image_id))
+                            save_pseudo_mask(
+                                crf_argmax_mask(rgb, cam_payload,
+                                                alpha=float(self.config["cam_crf_alpha"])),
+                                out_path.parent, image_id)
+                    count += 1
+                self.logger.info("generated %d %s pseudo-masks%s", count, out_name,
+                                 " (+CRF)" if use_crf_here else "")
+                del model
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+        finally:
+            if executor is not None:
+                for future in crf_futures:   # finish any remaining refinements
+                    future.result()
+                executor.shutdown(wait=True)
+
+        missing_crf = (self.masks_dir / "cam_naive_crf")
+        if use_crf and not any(missing_crf.glob("*.png")):
+            raise RuntimeError("DenseCRF was enabled but produced no masks - check worker logs")
 
         artifacts.append(str(self.masks_dir))
-        quality = self._pseudo_label_quality(train_ids)
+        quality = self._pseudo_label_quality(seg_train_ids)
         (self.metrics_dir / "pseudo_quality.json").write_text(
             json.dumps(quality, indent=2) + "\n", encoding="utf-8")
         return artifacts, {"crf_available": CRF_AVAILABLE}
 
-    def _pseudo_label_quality(self, train_ids: list[str]) -> dict:
+    def _pseudo_label_quality(self, seg_train_ids: list[str]) -> dict:
         """Diagnostic-only comparison of pseudo masks against GT train masks."""
         gt_dir = self.gt_mask_dir()
         report: dict[str, Any] = {}
@@ -442,7 +522,7 @@ class FullPipeline:
             if not directory.is_dir():
                 continue
             matrix = ConfusionMatrix(self.num_classes)
-            for image_id in train_ids:
+            for image_id in seg_train_ids:
                 pred_path = directory / f"{image_id}.png"
                 gt_path = gt_dir / f"{image_id}.png"
                 if not pred_path.is_file() or not gt_path.is_file():
@@ -533,9 +613,9 @@ class FullPipeline:
     # -- evaluation ------------------------------------------------------------
 
     def _stage_evaluate(self):
-        _, _, val_ids, _ = self._resolve_splits()
-        if not val_ids:
-            val_ids = read_split_list(self.voc_root / "ImageSets/Segmentation/val.txt")
+        # Always the official segmentation val split (1,449 ids) - NOT the larger
+        # ImageSets/Main classification val list, most of which has no GT masks.
+        val_ids = read_split_list(self.voc_root / "ImageSets/Segmentation/val.txt")
         runs = {
             "fully_sup": "seg_fully_sup.pth",
             "cam": "seg_cam.pth",
@@ -552,7 +632,8 @@ class FullPipeline:
             metrics = evaluate_segmentation(
                 model, self.voc_root, val_ids, self.gt_mask_dir(), self.device,
                 self.num_classes, max_images=self.config["eval_max_images"],
-                num_workers=int(self.config["eval_num_workers"]))
+                num_workers=int(self.config["eval_num_workers"]),
+                batch_size=int(self.config["eval_batch_size"]))
             results[method] = metrics
             self.logger.info("[eval] %-10s mIoU %.2f dice %.2f pixacc %.2f", method,
                              metrics["miou"], metrics["dice"], metrics["pixel_accuracy"])
@@ -567,12 +648,7 @@ class FullPipeline:
     # -- visualization -----------------------------------------------------------
 
     def _stage_visualize(self):
-        _, _, val_ids, _ = self._resolve_splits()
-        if not val_ids:
-            val_ids = read_split_list(self.voc_root / "ImageSets/Segmentation/val.txt")
-        n = int(self.config["viz_n_examples"])
-        stride = max(1, len(val_ids) // max(1, n))
-        chosen = val_ids[::stride][:n]
+        chosen = self._viz_val_ids()
 
         models = {}
         for method in ("fully_sup", "cam", "seam"):

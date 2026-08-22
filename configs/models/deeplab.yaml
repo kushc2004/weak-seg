@@ -6,5 +6,5 @@ seg_batch_size: 8
 seg_lr: 0.01
 seg_momentum: 0.9
 seg_weight_decay: 0.0001
-seg_epochs: 30
+seg_epochs: 22         # COCO-init fine-tuning converges well before 30
 seg_num_workers: 4

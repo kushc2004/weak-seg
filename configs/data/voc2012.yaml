@@ -1,3 +1,6 @@
 # Evaluation and reporting budgets.
 eval_max_images: null   # null = full VOC val (1449 images)
+eval_batch_size: 8      # batched inference; identical predictions to bs=1
+eval_num_workers: 2
+crf_workers: 4          # CPU processes; CRF overlaps the next model's CAM generation
 viz_n_examples: 10      # qualitative grids saved under outputs/visualizations/

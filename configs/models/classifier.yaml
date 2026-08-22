@@ -6,7 +6,7 @@ cls_lr: 0.01
 cls_momentum: 0.9
 cls_weight_decay: 0.0005
 cls_epochs_plain: 15
-cls_epochs_seam: 30     # SEAM losses need more steps on the small train split
+cls_epochs_seam: 20     # 714 it/epoch x 20 = ~14k steps (SEAM paper used ~10.5k)
 cls_head_lr_mult: 10.0
 cls_num_workers: 4
 cls_scale_factor: 0.3   # equivariant downscale factor (SEAM recipe)
