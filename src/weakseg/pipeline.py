@@ -222,6 +222,19 @@ class FullPipeline:
             )
         return ids
 
+    def _weak_training_ids(self) -> tuple[list[str], int]:
+        """Segmentation-train ids that ALSO carry an official image-level label.
+
+        ~300 VOC2012 segmentation-train images (inherited from the VOC2007 pool,
+        e.g. ``2007_000032``) were never classified under VOC2012's Main task, so
+        no honest image-level label exists for them. They are excluded from ALL
+        experiment rows alike so every method trains on the identical image set.
+        """
+        labelled = set(self._cls_label_union())
+        seg_ids = self._seg_train_ids()
+        covered = [image_id for image_id in seg_ids if image_id in labelled]
+        return covered, len(seg_ids) - len(covered)
+
     def _viz_val_ids(self) -> list[str]:
         """Evenly spaced val ids used for qualitative grids (kept small on purpose)."""
         val_ids = read_split_list(self.voc_root / "ImageSets/Segmentation/val.txt")
@@ -426,17 +439,18 @@ class FullPipeline:
         # Classifiers may train on all Main-labelled images (5,717 for VOC train),
         # but pseudo masks are only needed where they are consumed: the segmentation
         # training ids plus the handful of val ids used in qualitative grids.
-        seg_train_ids = self._seg_train_ids()
+        seg_train_ids, dropped = self._weak_training_ids()
         viz_ids = self._viz_val_ids() if self.config["cam_include_val_for_viz"] else []
         label_lookup = self._cls_label_union()
 
+        if dropped:
+            self.logger.warning(
+                "%d/%d segmentation-train ids carry no Main image-level label "
+                "(VOC2007-inherited images) - excluded from ALL rows for a controlled comparison",
+                dropped, dropped + len(seg_train_ids))
+        viz_ids = [i for i in viz_ids if i in label_lookup]
+
         target_ids = list(dict.fromkeys(seg_train_ids + viz_ids))
-        missing = [image_id for image_id in target_ids if image_id not in label_lookup]
-        if missing:
-            raise RuntimeError(
-                f"{len(missing)} target ids have no image-level label in Main train/val, "
-                f"e.g. {missing[:5]} - cannot build pseudo masks for them."
-            )
         target_labels = self._labels_for(target_ids, label_lookup)
         self.logger.info("pseudo masks: %d segmentation-train ids + %d viz ids",
                          len(seg_train_ids), len(viz_ids))
@@ -547,7 +561,10 @@ class FullPipeline:
     # -- segmentation ----------------------------------------------------------
 
     def _train_segmentation(self, run_name: str, mask_dir: Path) -> tuple[list[str], dict]:
-        train_ids = self._seg_train_ids()
+        # Every row - including fully supervised - trains on the SAME id set
+        # (segmentation-train ids that carry an official image-level label),
+        # so differences in the results table come purely from supervision.
+        train_ids, _ = self._weak_training_ids()
         init = "random" if self.fast_dev_run else str(self.config["seg_init"])
         model = build_deeplab(num_classes=self.num_classes, init=init)
         model.to(self.device)
