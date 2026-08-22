@@ -232,6 +232,21 @@ class FullPipeline:
     def _labels_for(self, image_ids: list[str], lookup: dict[str, np.ndarray]) -> np.ndarray:
         return np.stack([lookup[image_id] for image_id in image_ids])
 
+    def _cls_label_union(self) -> dict[str, np.ndarray]:
+        """Image-level labels merged over Main train+val (= trainval coverage).
+
+        VOC2012's segmentation splits are sampled from the classification
+        trainval pool and are deliberately NOT aligned with either Main split
+        alone - a segmentation-train image may sit in Main/val.txt and vice
+        versa - so pseudo-mask generation must look up labels in the union.
+        """
+        lookup: dict[str, np.ndarray] = {}
+        for split in ("train", "val"):
+            ids, labels = load_cls_labels(
+                self.voc_root, split, self.num_fg_classes, self.class_names_fg)
+            lookup.update(zip(ids, labels))
+        return lookup
+
     def gt_mask_dir(self) -> Path:
         if self.class_names_fg is not None:  # synthetic dataset
             return self.voc_root / "SegmentationClass"
@@ -413,19 +428,15 @@ class FullPipeline:
         # training ids plus the handful of val ids used in qualitative grids.
         seg_train_ids = self._seg_train_ids()
         viz_ids = self._viz_val_ids() if self.config["cam_include_val_for_viz"] else []
-
-        train_split = str(self.config["label_source_split"])
-        if train_split == "auto":
-            train_split = {"train": "train", "val": "val", "train_aug": "train"}.get(
-                str(self.config["train_list"]), "train")
-        label_lookup = dict(zip(*load_cls_labels(
-            self.voc_root, train_split, self.num_fg_classes, self.class_names_fg)))
-        if viz_ids:
-            val_lookup = dict(zip(*load_cls_labels(
-                self.voc_root, "val", self.num_fg_classes, self.class_names_fg)))
-            label_lookup.update(val_lookup)
+        label_lookup = self._cls_label_union()
 
         target_ids = list(dict.fromkeys(seg_train_ids + viz_ids))
+        missing = [image_id for image_id in target_ids if image_id not in label_lookup]
+        if missing:
+            raise RuntimeError(
+                f"{len(missing)} target ids have no image-level label in Main train/val, "
+                f"e.g. {missing[:5]} - cannot build pseudo masks for them."
+            )
         target_labels = self._labels_for(target_ids, label_lookup)
         self.logger.info("pseudo masks: %d segmentation-train ids + %d viz ids",
                          len(seg_train_ids), len(viz_ids))
