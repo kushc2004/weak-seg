@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# Testing & Linting
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Data & artifacts (VOC2012 tarball is ~2GB; checkpoints are retrainable)
+data/
+artifacts/
+outputs/
+RESULTS.md
+
+# Kaggle CLI working files
+.kaggle-outputs/
+.kaggle-run.log
+.env
+
+# Plan scratch
+PLAN.md

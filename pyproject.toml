@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weakseg"
+version = "0.1.0"
+description = "WeakSeg: Annotation-efficient semantic segmentation using image-level supervision, CAM pseudo-labels, and SEAM-style refinement"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "PyYAML>=6.0",
+    "tqdm>=4.65",
+    "scipy>=1.10",
+    "pillow>=9.5",
+    "requests>=2.28",
+]
+
+[project.optional-dependencies]
+crf = [
+    "pydensecrf2>=1.0",
+]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.1.0",
+]
+full = [
+    "matplotlib>=3.7",
+    "pytest>=7.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"

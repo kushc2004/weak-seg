@@ -1,0 +1,10 @@
+# DeepLabV3-ResNet50 training; identical settings for every supervision row.
+seg_init: coco         # coco (torchvision COCO-VOC weights) | random
+seg_crop_size: 512
+seg_resize_long: [512, 768]
+seg_batch_size: 8
+seg_lr: 0.01
+seg_momentum: 0.9
+seg_weight_decay: 0.0001
+seg_epochs: 30
+seg_num_workers: 4

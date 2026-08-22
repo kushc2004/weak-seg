@@ -1,0 +1,10 @@
+# CAM extraction and pseudo-mask synthesis.
+cam_naive_scales: [1.0]           # naive baseline stays single-scale by design
+cam_naive_flips: false
+cam_seam_scales: [0.5, 1.0, 1.5, 2.0]  # SEAM multi-scale aggregation (infer_SEAM protocol)
+cam_seam_flips: true
+cam_bg_alpha: 0.26                # constant background score for raw CAM argmax
+cam_use_crf: true                 # DenseCRF variant; skipped gracefully when unavailable
+cam_crf_alpha: 4.0                # bg = (1 - max_fg)^alpha fed to DenseCRF
+cam_max_long_side: 960
+cam_include_val_for_viz: true     # also extract CAMs on val images for qualitative grids

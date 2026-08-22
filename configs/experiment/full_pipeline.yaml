@@ -1,0 +1,9 @@
+# Global experiment settings for the WeakSeg pipeline.
+device: auto          # auto | cuda | mps | cpu
+seed: 42
+fast_dev_run: false   # true -> synthetic mini-VOC + tiny budgets end-to-end
+amp: true             # mixed precision on CUDA
+pretrained: true      # ImageNet/COCO transfer init (disabled automatically in fast runs)
+
+data_root: data
+train_list: train     # VOC split: train (1464) | val | train_aug (needs SegmentationClassAug)
