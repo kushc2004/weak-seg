@@ -31,10 +31,12 @@ htmlcov/
 .DS_Store
 
 # Data & artifacts (VOC2012 tarball is ~2GB; checkpoints are retrainable)
-data/
-artifacts/
-outputs/
-RESULTS.md
+# NOTE: leading '/' anchors these to the repo root - without it, git would also
+# exclude src/weakseg/data/ and break imports on a fresh clone.
+/data/
+/artifacts/
+/outputs/
+/RESULTS.md
 
 # Kaggle CLI working files
 .kaggle-outputs/

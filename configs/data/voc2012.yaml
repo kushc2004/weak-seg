@@ -1,0 +1,3 @@
+# Evaluation and reporting budgets.
+eval_max_images: null   # null = full VOC val (1449 images)
+viz_n_examples: 10      # qualitative grids saved under outputs/visualizations/
