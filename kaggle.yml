@@ -1,0 +1,11 @@
+kernel_type: notebook
+kernel_slug: kushchaudhari/weakseg
+project: weakseg
+code_file: notebooks/kaggle_weakseg.ipynb
+language: python
+is_private: true
+enable_gpu: true
+enable_tpu: false
+enable_internet: true
+machine_shape: NvidiaTeslaT4
+dataset_sources: []
