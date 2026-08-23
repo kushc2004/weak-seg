@@ -459,6 +459,8 @@ class FullPipeline:
         if bool(self.config["cam_use_crf"]) and not CRF_AVAILABLE:
             self.logger.warning("pydensecrf unavailable -> skipping CAM+CRF variant "
                                 "(install pydensecrf2 to enable the ownership experiment)")
+        if use_crf and not self._crf_smoke_ok():
+            use_crf = False
 
         jobs = [
             ("cam_naive", "plain", tuple(self.config["cam_naive_scales"]),
@@ -496,8 +498,11 @@ class FullPipeline:
                     mask = cams_to_argmax_mask(cam_dict, bg_alpha=float(self.config["cam_bg_alpha"]))
                     save_pseudo_mask(mask, out_dir, image_id)
                     if use_crf_here:
+                        # Owned writable copies: read-only / view arrays break both
+                        # multiprocessing pickling and pydensecrf's Cython buffers.
                         cam_payload = {
-                            c: np.asarray(scores, dtype=np.float32) for c, scores in cam_dict.items()
+                            c: np.array(scores, dtype=np.float32, copy=True)
+                            for c, scores in cam_dict.items()
                         }
                         out_path = self.masks_dir / f"{out_name}_crf" / f"{image_id}.png"
                         if executor is not None:
@@ -536,6 +541,25 @@ class FullPipeline:
         (self.metrics_dir / "pseudo_quality.json").write_text(
             json.dumps(quality, indent=2) + "\n", encoding="utf-8")
         return artifacts, {"crf_available": CRF_AVAILABLE}
+
+    def _crf_smoke_ok(self) -> bool:
+        """One tiny end-to-end DenseCRF call before committing 1,151 refinements to it.
+
+        Converts any residual environment incompatibility (writable-buffer rules,
+        ABI quirks) into graceful degradation of the CAM+CRF row instead of a
+        dead multi-hour session.
+        """
+        try:
+            from weakseg.weak.crf import dense_crf_inference
+
+            image = np.zeros((64, 64, 3), dtype=np.uint8)
+            image[:, :, 0] = 128
+            scores = np.stack([np.full((64, 64), 0.4), np.full((64, 64), 0.6)]).astype(np.float32)
+            result = dense_crf_inference(image, scores, iterations=2)
+            return result.shape == (2, 64, 64)
+        except Exception as exc:  # noqa: BLE001 - any failure disables the feature
+            self.logger.warning("DenseCRF smoke test failed (%s) -> disabling CAM+CRF row", exc)
+            return False
 
     def _pseudo_label_quality(self, seg_train_ids: list[str]) -> dict:
         """Diagnostic-only comparison of pseudo masks against GT train masks."""

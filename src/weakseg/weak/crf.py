@@ -19,6 +19,16 @@ except Exception:  # noqa: BLE001 - any import failure disables the feature
     CRF_AVAILABLE = False
 
 
+def _writable_uint8(image_rgb: np.ndarray) -> np.ndarray:
+    """pydensecrf's Cython layer requires an OWNED WRITABLE buffer - ``np.asarray``
+    on PIL images yields read-only arrays, which raise
+    'ValueError: buffer source array is read-only' deep inside C++."""
+    image = np.ascontiguousarray(image_rgb, dtype=np.uint8)
+    if not image.flags.writeable:
+        image = image.copy()
+    return image
+
+
 def dense_crf_inference(image_rgb: np.ndarray, probs: np.ndarray, iterations: int = 10,
                         gaussian_sxy: float = 3.0, gaussian_compat: float = 3.0,
                         bilateral_sxy: float = 80.0, bilateral_srgb: float = 13.0,
@@ -37,7 +47,8 @@ def dense_crf_inference(image_rgb: np.ndarray, probs: np.ndarray, iterations: in
     model.setUnaryEnergy(unary)
     model.addPairwiseGaussian(sxy=gaussian_sxy, compat=gaussian_compat)
     model.addPairwiseBilateral(
-        sxy=bilateral_sxy, srgb=bilateral_srgb, rgbim=np.ascontiguousarray(image_rgb),
+        sxy=bilateral_sxy, srgb=bilateral_srgb,
+        rgbim=_writable_uint8(image_rgb),
         compat=bilateral_compat,
     )
     inference = model.inference(iterations)
