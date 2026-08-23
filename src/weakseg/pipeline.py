@@ -70,6 +70,11 @@ STAGES = [
     "generate_report",
 ]
 
+
+class CheckpointMismatch(RuntimeError):
+    """A saved checkpoint does not match the architecture it is labelled as."""
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "device": "auto",
     "seed": 42,
@@ -273,6 +278,14 @@ class FullPipeline:
             else SeamNet(self.num_classes, pretrained=False)
         path = self.checkpoints_dir / f"classifier_{arch}.pth"
         state = torch.load(path, map_location="cpu")
+        expected = set(model.state_dict().keys())
+        got = set(state.keys())
+        if expected != got:
+            raise CheckpointMismatch(
+                f"classifier_{arch}.pth does not match the '{arch}' architecture "
+                f"(unexpected: {sorted(got - expected)[:4]} | missing: {sorted(expected - got)[:4]}) "
+                "- likely saved under the wrong name; retraining instead of trusting it."
+            )
         model.load_state_dict(state)
         return model.to(self.device)
 
@@ -491,6 +504,15 @@ class FullPipeline:
         crf_workers = max(0, int(self.config["crf_workers"]))
         executor = ProcessPoolExecutor(max_workers=crf_workers) if (use_crf and crf_workers) else None
 
+        def _usable_model(arch: str):
+            """Load a salvaged checkpoint, or retrain it inline if it is corrupt/mismatched."""
+            try:
+                return self._load_classifier_checkpoint(arch)
+            except (CheckpointMismatch, FileNotFoundError, RuntimeError) as exc:
+                self.logger.warning("[%s] checkpoint unusable (%s) -> retraining inline", arch, exc)
+                self._train_classifier(arch)
+                return self._load_classifier_checkpoint(arch)
+
         def _drain_crf(limit: int) -> None:
             while len(crf_futures) > limit:
                 done = [f for f in crf_futures if f.done()]
@@ -506,7 +528,7 @@ class FullPipeline:
                 # The ownership experiment refines the NAIVE CAMs only: Raw CAM vs
                 # CAM+DenseCRF vs SEAM keeps one refinement variable per row.
                 use_crf_here = use_crf and out_name == "cam_naive"
-                model = self._load_classifier_checkpoint(arch)
+                model = _usable_model(arch)
                 out_dir = self.masks_dir / out_name
                 count = 0
                 for image_id, cam_dict in generate_cam_scores(
