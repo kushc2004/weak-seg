@@ -284,6 +284,24 @@ class FullPipeline:
 
     # ------------------------------------------------------------------- run
 
+    # A stage whose sentinel artifact exists counts as done even without a
+    # pipeline_state.json record - this is what lets raw checkpoint caches
+    # (uploaded without state) still skip their training stages.
+    STAGE_SENTINELS = {
+        "train_classifier_plain": "checkpoints/classifier_plain.pth",
+        "train_classifier_seam": "checkpoints/classifier_seam.pth",
+        "train_seg_fully_sup": "checkpoints/seg_fully_sup.pth",
+        "train_seg_cam": "checkpoints/seg_cam.pth",
+        "train_seg_cam_crf": "checkpoints/seg_cam_crf.pth",
+        "train_seg_seam": "checkpoints/seg_seam.pth",
+    }
+
+    def _stage_is_done(self, stage: str) -> bool:
+        if self.state_mgr.is_stage_complete(stage):
+            return True
+        sentinel = self.STAGE_SENTINELS.get(stage)
+        return bool(sentinel) and (self.outputs_dir / sentinel).is_file()
+
     def run(self, from_stage: str | None = None, to_stage: str | None = None) -> dict:
         start = STAGES.index(from_stage) if from_stage else 0
         end = STAGES.index(to_stage) if to_stage else len(STAGES) - 1
@@ -291,7 +309,7 @@ class FullPipeline:
             raise ValueError(f"from_stage {from_stage} is after to_stage {to_stage}")
 
         for stage in STAGES[start:end + 1]:
-            if not self.force and self.state_mgr.is_stage_complete(stage):
+            if not self.force and self._stage_is_done(stage):
                 self.logger.info("[skip] %s already complete", stage)
                 continue
             self.state_mgr.start_stage(stage)
