@@ -118,7 +118,8 @@ class VOCMultiScaleDataset(Dataset):
         original = load_image(self.voc_root, image_id)
         views = self._scaled_views(original)
         label = self.labels[index] if self.labels is not None else torch.empty(0)
-        return image_id, views, label, original.size
+        # PIL .size is (width, height); downstream expects (height, width).
+        return image_id, views, label, (original.size[1], original.size[0])
 
 
 def _joint_resize_crop_flip(image: Image.Image, mask: Image.Image,

@@ -128,13 +128,18 @@ def create_synthetic_voc(root: Path | str, num_images: int = 24, image_size: int
     for i in range(num_images):
         image_id = f"syn_{i:04d}"
         ids.append(image_id)
-        size = image_size + int(rng.integers(-16, 17))
-        img = np.full((size, size, 3), rng.integers(30, 90), dtype=np.uint8)
-        mask = np.zeros((size, size), dtype=np.uint8)
+        # Deliberately NON-SQUARE: transposed (W,H)/(H,W) bugs must fail smoke runs.
+        width = image_size + int(rng.integers(-16, 17))
+        height = image_size + int(rng.integers(-16, 17))
+        img = np.full((height, width, 3), rng.integers(30, 90), dtype=np.uint8)
+        mask = np.zeros((height, width), dtype=np.uint8)
         for cls_idx in range(len(class_names)):
             if rng.random() < 0.55:
-                x0, y0 = rng.integers(4, size - 40, size=2)
-                w = h = int(rng.integers(24, max(25, size // 2)))
+                x0, y0 = rng.integers(4, max(5, width - 40), size=2)
+                y0 = min(y0, max(0, height - 25))
+                x0 = min(x0, max(0, width - 25))
+                w = int(rng.integers(24, max(25, min(width, height) // 2)))
+                h = int(rng.integers(24, max(25, min(width, height) // 2)))
                 color = SYN_COLORS[cls_idx % len(SYN_COLORS)]
                 img[y0:y0 + h, x0:x0 + w] = color
                 mask[y0:y0 + h, x0:x0 + w] = cls_idx + 1
