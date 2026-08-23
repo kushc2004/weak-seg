@@ -25,14 +25,13 @@ KEEP_PREFIXES = ("outputs/",)
 KEEP_FILES = ("RESULTS.md",)
 
 
-def _download(slug: str, version: str | None, tmp: Path) -> None:
-    command = ["kaggle", "kernels", "output", slug, "-p", str(tmp)]
-    if version:
-        command += ["-v", version]
-    print(f"[fetch] downloading {slug} output ... (API downloads everything; we filter after)")
-    result = subprocess.run(command, check=False)
+def _download(slug: str, tmp: Path) -> None:
+    # Note: the CLI fetches the LATEST version's output and cannot partial-download,
+    # so we pull everything into a temp dir and filter afterwards.
+    print(f"[fetch] downloading {slug} output ...")
+    result = subprocess.run(["kaggle", "kernels", "output", slug, "-p", str(tmp)], check=False)
     if result.returncode != 0:
-        raise RuntimeError("kaggle kernels output failed")
+        raise RuntimeError("kaggle kernels output failed - check kernel slug/version")
 
 
 def _filter(tmp: Path, dest: Path) -> list[str]:
@@ -56,13 +55,12 @@ def _filter(tmp: Path, dest: Path) -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--slug", default=DEFAULT_SLUG)
-    parser.add_argument("--version", default=None, help="kernel version number")
     parser.add_argument("-o", "--out", type=Path, default=Path(".kaggle-outputs"))
     args = parser.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="weakseg-fetch-") as tmp_name:
-        _download(args.slug, args.version, Path(tmp_name))
+        _download(args.slug, Path(tmp_name))
         kept = _filter(Path(tmp_name), args.out)
 
     if not kept:
